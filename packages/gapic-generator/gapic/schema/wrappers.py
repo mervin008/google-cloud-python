@@ -445,7 +445,7 @@ class Field:
         self,
         *,
         address_allowlist: Set["metadata.Address"],
-        resource_messages: Dict[str, "MessageType"],
+        resource_messages: Mapping[str, "MessageType"],
     ) -> None:
         """Adds to the set of Addresses of wrapper objects to be included in selective GAPIC generation.
 
@@ -457,7 +457,7 @@ class Field:
                 objects to add to. Only the addresses of the allowlisted methods, the services
                 containing these methods, and messages/enums those methods use will be part of the
                 final address_allowlist. The set may be modified during this call.
-            resource_messages (Dict[str, wrappers.MessageType]): A dictionary mapping the unified
+            resource_messages (Mapping[str, wrappers.MessageType]): A dictionary mapping the unified
                 resource type name of a resource message to the corresponding MessageType object
                 representing that resource message. Only resources with a message representation
                 should be included in the dictionary.
@@ -864,7 +864,7 @@ class MessageType:
         self,
         *,
         address_allowlist: Set["metadata.Address"],
-        resource_messages: Dict[str, "MessageType"],
+        resource_messages: Mapping[str, "MessageType"],
     ) -> None:
         """Adds to the set of Addresses of wrapper objects to be included in selective GAPIC generation.
 
@@ -876,7 +876,7 @@ class MessageType:
                 objects to add to. Only the addresses of the allowlisted methods, the services
                 containing these methods, and messages/enums those methods use will be part of the
                 final address_allowlist. The set may be modified during this call.
-            resource_messages (Dict[str, wrappers.MessageType]): A dictionary mapping the unified
+            resource_messages (Mapping[str, wrappers.MessageType]): A dictionary mapping the unified
                 resource type name of a resource message to the corresponding MessageType object
                 representing that resource message. Only resources with a message representation
                 should be included in the dictionary.
@@ -1101,7 +1101,7 @@ class ExtendedOperationInfo:
         self,
         *,
         address_allowlist: Set["metadata.Address"],
-        resource_messages: Dict[str, "MessageType"],
+        resource_messages: Mapping[str, "MessageType"],
     ) -> None:
         """Adds to the set of Addresses of wrapper objects to be included in selective GAPIC generation.
 
@@ -1113,7 +1113,7 @@ class ExtendedOperationInfo:
                 objects to add to. Only the addresses of the allowlisted methods, the services
                 containing these methods, and messages/enums those methods use will be part of the
                 final address_allowlist. The set may be modified during this call.
-            resource_messages (Dict[str, wrappers.MessageType]): A dictionary mapping the unified
+            resource_messages (Mapping[str, wrappers.MessageType]): A dictionary mapping the unified
                 resource type name of a resource message to the corresponding MessageType object
                 representing that resource message. Only resources with a message representation
                 should be included in the dictionary.
@@ -1167,7 +1167,7 @@ class OperationInfo:
         self,
         *,
         address_allowlist: Set["metadata.Address"],
-        resource_messages: Dict[str, "MessageType"],
+        resource_messages: Mapping[str, "MessageType"],
     ) -> None:
         """Adds to the set of Addresses of wrapper objects to be included in selective GAPIC generation.
 
@@ -1179,7 +1179,7 @@ class OperationInfo:
                 objects to add to. Only the addresses of the allowlisted methods, the services
                 containing these methods, and messages/enums those methods use will be part of the
                 final address_allowlist. The set may be modified during this call.
-            resource_messages (Dict[str, wrappers.MessageType]): A dictionary mapping the unified
+            resource_messages (Mapping[str, wrappers.MessageType]): A dictionary mapping the unified
                 resource type name of a resource message to the corresponding MessageType object
                 representing that resource message. Only resources with a message representation
                 should be included in the dictionary.
@@ -1995,8 +1995,8 @@ class Method:
         self,
         *,
         address_allowlist: Set["metadata.Address"],
-        resource_messages: Dict[str, "MessageType"],
-        services_in_proto: Dict[str, "Service"],
+        resource_messages: Mapping[str, "MessageType"],
+        services_in_proto: Mapping["metadata.Address", "Service"],
     ) -> None:
         """Adds to the allowlist of Addresses of wrapper objects to be included in selective GAPIC generation.
 
@@ -2008,12 +2008,11 @@ class Method:
                 objects to add to. Only the addresses of the allowlisted methods, the services
                 containing these methods, and messages/enums those methods use will be part of the
                 final address_allowlist. The set may be modified during this call.
-            method_allowlist (Set[str]): An allowlist of fully-qualified method names.
-            resource_messages (Dict[str, wrappers.MessageType]): A dictionary mapping the unified
+            resource_messages (Mapping[str, wrappers.MessageType]): A dictionary mapping the unified
                 resource type name of a resource message to the corresponding MessageType object
                 representing that resource message. Only resources with a message representation
                 should be included in the dictionary.
-            services_in_proto (Dict[str, wrappers.Service]): A dictionary mapping the names of Service
+            services_in_proto (Mapping[metadata.Address, wrappers.Service]): A dictionary mapping the names of Service
                 objects in the proto containing this method to the Service objects. This is necessary
                 for traversing the operation service in the case of extended LROs.
         Returns:
@@ -2031,8 +2030,12 @@ class Method:
             # We need to add the service/method pointed to by self.operation_service to
             # the allowlist, as it might not have been specified by
             # the methods under selective_gapic_generation.
+            #
+            # We resolve the operation service name relative to this method's address.
             # We assume that the operation service lives in the same proto file as this one.
-            operation_service = services_in_proto[self.operation_service]
+            operation_service = services_in_proto[
+                self.meta.address.resolve(self.operation_service)
+            ]
             address_allowlist.add(operation_service.meta.address)
             operation_service.operation_polling_method.add_to_address_allowlist(
                 address_allowlist=address_allowlist,
@@ -2055,26 +2058,39 @@ class Method:
             resource_messages=resource_messages,
         )
 
-    def with_internal_methods(self, *, public_methods: Set[str]) -> "Method":
-        """Returns a version of this ``Method`` marked as internal
-
-        The methods not in the public_methods set will be marked as internal and
-        this ``Service`` will as well by extension (see :meth:`Service.is_internal`).
+    def with_selective_generation(
+        self,
+        *,
+        generate_omitted_as_internal: bool,
+        public_methods: Set[str],
+        excluded_addresses: Set["metadata.Address"],
+    ) -> Optional["Method"]:
+        """Returns a version of this Method for selective generation.
 
         Args:
-            public_methods (Set[str]): An allowlist of fully-qualified method names.
-                Methods not in this allowlist will be marked as internal.
+            generate_omitted_as_internal (bool): Whether to mark omitted methods as internal.
+            public_methods (Set[str]): The set of fully-qualified method names to keep as public.
+            excluded_addresses (Set[metadata.Address]): The set of addresses to exclude from generation.
+
         Returns:
-            Service: A version of this `Service` with `Method` objects corresponding to methods
-                not in `public_methods` marked as internal.
+            Optional[Method]: The method, possibly marked as internal, or None if it should be removed.
         """
         if self.ident.proto in public_methods:
             return self
 
-        return dataclasses.replace(
-            self,
-            is_internal=True,
-        )
+        # Not public.
+        # We mark it as internal if either:
+        #   1. generate_omitted_as_internal is set in selective_gapic_generation.
+        #   2. The method is NOT in excluded_addresses, which means it is reachable
+        #      from some public method (e.g. as a polling method for an extended LRO).
+        if generate_omitted_as_internal or self.meta.address not in excluded_addresses:
+            return dataclasses.replace(
+                self,
+                is_internal=True,
+            )
+        else:
+            return None
+
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2430,8 +2446,8 @@ class Service:
         *,
         address_allowlist: Set["metadata.Address"],
         method_allowlist: Set[str],
-        resource_messages: Dict[str, "MessageType"],
-        services_in_proto: Dict[str, "Service"],
+        resource_messages: Mapping[str, "MessageType"],
+        services_in_proto: Mapping["metadata.Address", "Service"],
     ) -> None:
         """Adds to the allowlist of Addresses of wrapper objects to be included in selective GAPIC generation.
 
@@ -2444,11 +2460,11 @@ class Service:
                 containing these methods, and messages/enums those methods use will be part of the
                 final address_allowlist. The set may be modified during this call.
             method_allowlist (Set[str]): An allowlist of fully-qualified method names.
-            resource_messages (Dict[str, wrappers.MessageType]): A dictionary mapping the unified
+            resource_messages (Mapping[str, wrappers.MessageType]): A dictionary mapping the unified
                 resource type name of a resource message to the corresponding MessageType object
                 representing that resource message. Only resources with a message representation
                 should be included in the dictionary.
-            services_in_proto (Dict[str, Service]):
+            services_in_proto (Mapping[metadata.Address, Service]):
         Returns:
             None
         """
@@ -2463,45 +2479,33 @@ class Service:
                     services_in_proto=services_in_proto,
                 )
 
-    def prune_messages_for_selective_generation(
-        self, *, address_allowlist: Set["metadata.Address"]
-    ) -> "Service":
-        """Returns a truncated version of this Service.
-
-        Only the methods, messages, and enums contained in the address allowlist
-        are included in the returned object.
-
-        Args:
-            address_allowlist (Set[metadata.Address]): A set of allowlisted metadata.Address
-                objects to filter against. Objects with addresses not the allowlist will be
-                removed from the returned Proto.
-        Returns:
-            Service: A truncated version of this proto.
-        """
-        return dataclasses.replace(
-            self,
-            methods={
-                k: v for k, v in self.methods.items() if v.ident in address_allowlist
-            },
-        )
-
-    def with_internal_methods(self, *, public_methods: Set[str]) -> "Service":
-        """Returns a version of this ``Service`` with some Methods marked as internal.
-
-        The methods not in the public_methods set will be marked as internal and
-        this ``Service`` will as well by extension (see :meth:`Service.is_internal`).
+    def with_selective_generation(
+        self,
+        *,
+        generate_omitted_as_internal: bool,
+        public_methods: Set[str],
+        excluded_addresses: Set["metadata.Address"],
+    ) -> Optional["Service"]:
+        """Returns a version of this Service for selective generation.
 
         Args:
-            public_methods (Set[str]): An allowlist of fully-qualified method names.
-                Methods not in this allowlist will be marked as internal.
+            generate_omitted_as_internal (bool): Whether to mark omitted methods as internal.
+            public_methods (Set[str]): The set of fully-qualified method names to keep as public.
+            excluded_addresses (Set[metadata.Address]): The set of addresses to exclude from generation.
+
         Returns:
-            Service: A version of this `Service` with `Method` objects corresponding to methods
-                not in `public_methods` marked as internal.
+            Optional[Service]: The service with filtered methods, or None if it should be removed.
         """
-        return dataclasses.replace(
-            self,
-            methods={
-                k: v.with_internal_methods(public_methods=public_methods)
-                for k, v in self.methods.items()
-            },
-        )
+        methods = {}
+        for k, v in self.methods.items():
+            new_v = v.with_selective_generation(
+                generate_omitted_as_internal=generate_omitted_as_internal,
+                public_methods=public_methods,
+                excluded_addresses=excluded_addresses)
+            if new_v:
+                methods[k] = new_v
+
+        if not generate_omitted_as_internal and not methods:
+            return None
+
+        return dataclasses.replace(self, methods=methods)

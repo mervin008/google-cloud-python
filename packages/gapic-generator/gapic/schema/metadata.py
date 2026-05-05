@@ -61,20 +61,22 @@ class Address(BaseAddress):
         # We don't want to use api_naming or collisions to determine equality,
         # so defer to the parent class's eq method.
         # This is an fairly important optimization for large APIs.
-        return super().__eq__(other)
+        #
+        # Note: Address objects are considered equal if they represent the same
+        # proto element (i.e. same package, parent, and name). This allows
+        # consistent lookups in dictionaries even if other metadata (like module)
+        # differs. We use the `.proto` property as the canonical identifier.
+        if not isinstance(other, Address):
+            return False
+
+        return self.proto == other.proto
 
     def __hash__(self):
-        # Do NOT include collisions; they are not relevant.
-        return hash(
-            (
-                self.name,
-                self.module,
-                self.module_path,
-                self.package,
-                self.parent,
-                self.api_naming,
-            )
-        )
+        # Do NOT include collisions or api_naming; they are not relevant
+        # to equality and including them violates the hash contract.
+        #
+        # We hash based on the canonical proto identifier to ensure consistency with __eq__.
+        return hash(self.proto)
 
     def __str__(self) -> str:
         """Return the Python identifier for this type.
@@ -339,7 +341,7 @@ class Address(BaseAddress):
         # Return the usual `module.Name`.
         return str(self)
 
-    def resolve(self, selector: str) -> str:
+    def resolve(self, selector: str) -> "Address":
         """Resolve a potentially-relative protobuf selector.
 
         This takes a protobuf selector which may be fully-qualified
@@ -354,11 +356,25 @@ class Address(BaseAddress):
                 or relative.
 
         Returns:
-            str: An absolute selector.
+            ~.Address: An absolute selector.
+
+                Note: The returned Address object is "partial"; it contains the
+                correct package and name (and thus the correct `.proto` identifier),
+                but other metadata like `module` or `parent` is reset. This is
+                sufficient for looking up the full object in API-wide maps.
         """
         if "." not in selector:
-            return f"{'.'.join(self.package)}.{selector}"
-        return selector
+            selector = f"{'.'.join(self.package)}.{selector}"
+
+        parts = selector.split(".")
+        return dataclasses.replace(
+            self,
+            name=parts[-1],
+            package=tuple(parts[:-1]),
+            parent=(),
+            module="",
+            module_path=(),
+        )
 
     @cached_proto_context
     def with_context(self, *, collisions: Set[str]) -> "Address":

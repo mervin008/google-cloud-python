@@ -259,113 +259,59 @@ class Proto:
             return self.disambiguate(f"_{string}")
         return string
 
-    def add_to_address_allowlist(
+    def with_selective_generation(
         self,
         *,
-        address_allowlist: Set["metadata.Address"],
-        method_allowlist: Set[str],
-        resource_messages: Dict[str, "wrappers.MessageType"],
-    ) -> None:
-        """Adds to the set of Addresses of wrapper objects to be included in selective GAPIC generation.
-
-        This method is used to create an allowlist of addresses to be used to filter out unneeded
-        services, methods, messages, and enums at a later step.
-
-        Args:
-            address_allowlist (Set[metadata.Address]): A set of allowlisted metadata.Address
-                objects to add to. Only the addresses of the allowlisted methods, the services
-                containing these methods, and messages/enums those methods use will be part of the
-                final address_allowlist. The set may be modified during this call.
-            method_allowlist (Set[str]): An allowlist of fully-qualified method names.
-            resource_messages (Dict[str, wrappers.MessageType]): A dictionary mapping the unified
-                resource type name of a resource message to the corresponding MessageType object
-                representing that resource message. Only resources with a message representation
-                should be included in the dictionary.
-        Returns:
-            None
-        """
-        # The method.operation_service for an extended LRO is not fully qualified, so we
-        # truncate the service names accordingly so they can be found in
-        # method.add_to_address_allowlist
-        services_in_proto = {
-            service.name: service for service in self.services.values()
-        }
-        for service in self.services.values():
-            service.add_to_address_allowlist(
-                address_allowlist=address_allowlist,
-                method_allowlist=method_allowlist,
-                resource_messages=resource_messages,
-                services_in_proto=services_in_proto,
-            )
-
-    def prune_messages_for_selective_generation(
-        self, *, address_allowlist: Set["metadata.Address"]
+        generate_omitted_as_internal: bool,
+        public_methods: Set[str],
+        excluded_addresses: Set["metadata.Address"],
     ) -> Optional["Proto"]:
-        """Returns a truncated version of this Proto.
-
-        Only the services, messages, and enums contained in the allowlist
-        of visited addresses are included in the returned object. If there
-        are no services, messages, or enums left, and no file level resources,
-        return None.
+        """Returns a version of this Proto for selective generation.
 
         Args:
-            address_allowlist (Set[metadata.Address]): A set of allowlisted metadata.Address
-                objects to filter against. Objects with addresses not the allowlist will be
-                removed from the returned Proto.
-        Returns:
-            Optional[Proto]: A truncated version of this proto. If there are no services, messages,
-                or enums left after the truncation process and there are no file level resources,
-                returns None.
-        """
-        # Once the address allowlist has been created, it suffices to only
-        # prune items at 2 different levels to truncate the Proto object:
-        #
-        #   1. At the Proto level, we remove unnecessary services, messages,
-        #      and enums.
-        #   2. For allowlisted services, at the Service level, we remove
-        #      non-allowlisted methods.
-        services = {
-            k: v.prune_messages_for_selective_generation(
-                address_allowlist=address_allowlist
-            )
-            for k, v in self.services.items()
-            if v.meta.address in address_allowlist
-        }
+            generate_omitted_as_internal (bool): Whether to mark omitted methods as internal.
+            public_methods (Set[str]): The set of fully-qualified method names to keep as public.
+            excluded_addresses (Set[metadata.Address]): The set of addresses to exclude from generation.
 
+        Returns:
+            Optional[Proto]: A version of this Proto with services/methods filtered.
+                Returns None if the Proto becomes empty and generate_omitted_as_internal is False.
+        """
+        services = {}
+        for k, v in self.services.items():
+            new_v = v.with_selective_generation(
+                generate_omitted_as_internal=generate_omitted_as_internal,
+                public_methods=public_methods,
+                excluded_addresses=excluded_addresses)
+            if new_v:
+                services[k] = new_v
+
+        # We only prune messages/enums from protos that are not dependencies.
+        # A message or enum is excluded IF AND ONLY IF:
+        #   1. It is a top-level request or response message for an omitted RPC.
+        #   2. It is NOT reachable from any publicly allowed RPC.
+        #
+        # This ensures that shared messages, messages not attached to any RPC,
+        # and messages reachable via other paths (like LRO response types) are KEPT.
         all_messages = {
-            k: v for k, v in self.all_messages.items() if v.ident in address_allowlist
+            k: v for k, v in self.all_messages.items() if v.ident not in excluded_addresses
         }
 
         all_enums = {
-            k: v for k, v in self.all_enums.items() if v.ident in address_allowlist
+            k: v for k, v in self.all_enums.items() if v.ident not in excluded_addresses
         }
 
-        if not services and not all_messages and not all_enums:
+        # If the proto becomes empty after pruning, we return None to signal
+        # that it should be excluded from generation.
+        if not generate_omitted_as_internal and not services and not all_messages and not all_enums:
             return None
 
         return dataclasses.replace(
-            self, services=services, all_messages=all_messages, all_enums=all_enums
+            self,
+            services=services,
+            all_messages=all_messages,
+            all_enums=all_enums,
         )
-
-    def with_internal_methods(self, *, public_methods: Set[str]) -> "Proto":
-        """Returns a version of this Proto with some Methods marked as internal.
-
-        The methods not in the public_methods set will be marked as internal and
-        services containing these methods will also be marked as internal by extension.
-        (See :meth:`Service.is_internal` for more details).
-
-        Args:
-            public_methods (Set[str]): An allowlist of fully-qualified method names.
-                Methods not in this allowlist will be marked as internal.
-        Returns:
-            Proto: A version of this Proto with Method objects corresponding to methods
-                not in `public_methods` marked as internal.
-        """
-        services = {
-            k: v.with_internal_methods(public_methods=public_methods)
-            for k, v in self.services.items()
-        }
-        return dataclasses.replace(self, services=services)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -530,37 +476,82 @@ class API:
                     k: v for k, v in api.all_protos.items() if k not in api.protos
                 }
 
-                if selective_gapic_settings.generate_omitted_as_internal:
-                    for name, proto in api.protos.items():
-                        new_all_protos[name] = proto.with_internal_methods(
-                            public_methods=selective_gapic_methods
-                        )
-                else:
-                    all_resource_messages = collections.ChainMap(
-                        *(proto.resource_messages for proto in protos.values())
-                    )
+                all_resource_messages = collections.ChainMap(
+                    *(proto.resource_messages for proto in api.all_protos.values())
+                )
 
-                    # Prepare a list of addresses to include in selective generation,
-                    # then prune each Proto object. We look at metadata.Addresses, not objects, because
-                    # objects that refer to the same thing in the proto are different Python objects
-                    # in memory.
-                    address_allowlist: Set["metadata.Address"] = set([])
-                    for proto in api.protos.values():
-                        proto.add_to_address_allowlist(
-                            address_allowlist=address_allowlist,
+                # Create a global map of services to support cross-proto lookup
+                # for extended LROs.
+                #
+                # Note: This is keyed by the Address object itself (which is
+                # hashable by its proto name) to ensure compatibility with
+                # Address.resolve() lookups in wrappers.py.
+                all_services: Dict[metadata.Address, wrappers.Service] = {}
+                for p in api.all_protos.values():
+                    for s in p.services.values():
+                        all_services[s.meta.address] = s
+
+                # Calculate addresses of omitted RPCs and their top-level request/response messages.
+                # These are "candidates" for exclusion.
+                #
+                # We only consider top-level request/response messages of omitted RPCs as
+                # candidates for exclusion. This is conservative: it ensures that:
+                #   - Messages NOT used by any RPC are KEPT (e.g. for user convenience).
+                #   - Messages shared between an omitted and a kept RPC are KEPT.
+                #   - Messages reachable from a kept RPC but NOT as a top-level request/response
+                #     (e.g. nested messages) are KEPT.
+                candidate_excluded_addresses: Set["metadata.Address"] = set([])
+                for proto in api.all_protos.values():
+                    for service in proto.services.values():
+                        for method in service.methods.values():
+                            if method.ident.proto not in selective_gapic_methods:
+                                # Candidate for exclusion: the method itself and its direct request/response types.
+                                candidate_excluded_addresses.add(method.meta.address)
+                                candidate_excluded_addresses.add(method.input.ident)
+                                candidate_excluded_addresses.add(method.output.ident)
+
+                                # If this is an LRO, add its response and metadata types to candidates.
+                                if method.lro:
+                                    candidate_excluded_addresses.add(method.lro.response_type.ident)
+                                    candidate_excluded_addresses.add(method.lro.metadata_type.ident)
+
+                                # If this is an extended LRO, add its request and operation types to candidates.
+                                if method.extended_lro:
+                                    candidate_excluded_addresses.add(method.extended_lro.request_type.ident)
+                                    candidate_excluded_addresses.add(method.extended_lro.operation_type.ident)
+
+                # Calculate publicly reachable addresses (API-wide).
+                # This includes all types reachable from the allowlisted (public) methods.
+                public_rpc_addresses: Set["metadata.Address"] = set([])
+                for proto in api.all_protos.values():
+                    for service in proto.services.values():
+                        service.add_to_address_allowlist(
+                            address_allowlist=public_rpc_addresses,
                             method_allowlist=selective_gapic_methods,
                             resource_messages=all_resource_messages,
+                            services_in_proto=all_services,
                         )
 
-                    # We only prune services/messages/enums from protos that are not dependencies.
-                    for name, proto in api.protos.items():
-                        proto_to_generate = (
-                            proto.prune_messages_for_selective_generation(
-                                address_allowlist=address_allowlist
-                            )
-                        )
-                        if proto_to_generate:
-                            new_all_protos[name] = proto_to_generate
+                # Addresses to exclude: those that are candidates for exclusion but NOT
+                # reachable from any PUBLIC RPC.
+                #
+                # This set difference effectively "vets" the candidates. If a candidate
+                # message is actually reachable from a public RPC, it's removed from
+                # the exclusion list.
+                excluded_addresses = (
+                    candidate_excluded_addresses - public_rpc_addresses
+                    if not selective_gapic_settings.generate_omitted_as_internal
+                    else set([])
+                )
+
+                for name, proto in api.protos.items():
+                    proto_to_generate = proto.with_selective_generation(
+                        generate_omitted_as_internal=selective_gapic_settings.generate_omitted_as_internal,
+                        public_methods=selective_gapic_methods,
+                        excluded_addresses=excluded_addresses,
+                    )
+                    if proto_to_generate:
+                        new_all_protos[name] = proto_to_generate
 
                 api = cls(
                     naming=naming,
@@ -1514,8 +1505,8 @@ class _ProtoBuilder:
             response_key = service_address.resolve(op.response_type)
             metadata_key = service_address.resolve(op.metadata_type)
             lro = wrappers.OperationInfo(
-                response_type=self.api_messages[response_key],
-                metadata_type=self.api_messages[metadata_key],
+                response_type=self.api_messages[response_key.proto],
+                metadata_type=self.api_messages[metadata_key.proto],
             )
 
         return lro
@@ -1558,7 +1549,7 @@ class _ProtoBuilder:
         operation_request_key = service_address.resolve(
             operation_polling_method_pb.input_type.lstrip(".")
         )
-        operation_request_message = self.api_messages[operation_request_key]
+        operation_request_message = self.api_messages[operation_request_key.proto]
 
         operation_type = service_address.resolve(
             operation_polling_method_pb.output_type.lstrip(".")
@@ -1568,12 +1559,12 @@ class _ProtoBuilder:
             raise ValueError(
                 f"Inconsistent return types between extended lro method '{meth_pb.name}'"
                 f" and extended lro polling method '{operation_polling_method_pb.name}':"
-                f" '{method_output_type}' and '{operation_type}'"
+                f" '{method_output_type.proto}' and '{operation_type.proto}'"
             )
 
-        operation_message = self.api_messages[operation_type]
+        operation_message = self.api_messages[operation_type.proto]
         if not operation_message.is_extended_operation:
-            raise ValueError(f"Message is not an extended operation: {operation_type}")
+            raise ValueError(f"Message is not an extended operation: {operation_type.proto}")
 
         return wrappers.ExtendedOperationInfo(
             request_type=operation_request_message,

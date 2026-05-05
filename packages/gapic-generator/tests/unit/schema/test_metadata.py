@@ -65,6 +65,20 @@ def test_address_str_different_proto_package_with_collision():
     assert str(addr) == "status_pb2.Status"
 
 
+def test_address_eq():
+    addr = metadata.Address(package=("foo", "bar"), module="baz", name="Bacon")
+    assert addr == metadata.Address(package=("foo", "bar"), module="baz", name="Bacon")
+    assert addr != metadata.Address(package=("foo", "qux"), module="baz", name="Bacon")
+    assert addr != "not an address"
+
+
+def test_address_hash():
+    addr = metadata.Address(package=("foo", "bar"), module="baz", name="Bacon")
+    assert hash(addr) == hash(
+        metadata.Address(package=("foo", "bar"), module="baz", name="Bacon")
+    )
+
+
 def test_address_proto():
     addr = metadata.Address(package=("foo", "bar"), module="baz", name="Bacon")
     assert addr.proto == "foo.bar.Bacon"
@@ -206,9 +220,9 @@ def test_address_rel_nested_parent():
 
 def test_address_resolve():
     addr = metadata.Address(package=("foo", "bar"), module="baz", name="Qux")
-    assert addr.resolve("Bacon") == "foo.bar.Bacon"
-    assert addr.resolve("foo.bar.Bacon") == "foo.bar.Bacon"
-    assert addr.resolve("google.example.Bacon") == "google.example.Bacon"
+    assert addr.resolve("Bacon").proto == "foo.bar.Bacon"
+    assert addr.resolve("foo.bar.Bacon").proto == "foo.bar.Bacon"
+    assert addr.resolve("google.example.Bacon").proto == "google.example.Bacon"
 
 
 def test_address_subpackage():
