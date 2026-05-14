@@ -1,4 +1,4 @@
- # -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # Copyright 2026 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -1310,13 +1310,12 @@ class CertificateMap(proto.Message):
             number=3,
             oneof="target_proxy",
         )
-        ip_configs: MutableSequence[
-            "CertificateMap.GclbTarget.IpConfig"
-        ] = proto.RepeatedField(
-            proto.MESSAGE,
-            number=2,
-            message="CertificateMap.GclbTarget.IpConfig",
-        )
+         ip_configs: MutableSequence["CertificateMap.GclbTarget.IpConfig"] = (
+            proto.RepeatedField(
+                proto.MESSAGE,
+                number=2,
+                message="CertificateMap.GclbTarget.IpConfig",
+            )
 
     name: str = proto.Field(
         proto.STRING,
